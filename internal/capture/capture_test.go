@@ -46,7 +46,7 @@ func TestDarwinBackendShape(t *testing.T) {
 	}
 	args := b.argsFor(8000, "auto")
 	got := strings.Join(args, " ")
-	for _, want := range []string{"avfoundation", "h264_videotoolbox", "8000k", "-f", "h264", "pipe:1"} {
+	for _, want := range []string{"avfoundation", "h264_videotoolbox", "8000k", "-f", "h264", "pipe:1", "fps=60", "-r"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("darwin args missing %q in:\n%s", want, got)
 		}

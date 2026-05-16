@@ -177,12 +177,14 @@ function attachInput(el, dc) {
 }
 
 function attachHud(pc) {
+  let firstBytesSeen = false;
   setInterval(async () => {
     const stats = await pc.getStats();
-    let fps = 0, kbps = 0, jitter = 0, rtt = 0;
+    let fps = 0, kbps = 0, jitter = 0, rtt = 0, bytesReceived = 0;
     stats.forEach(r => {
       if (r.type === 'inbound-rtp' && r.kind === 'video') {
         fps = r.framesPerSecond || 0;
+        bytesReceived = r.bytesReceived || 0;
         kbps = Math.round((r.bytesReceived * 8) / 1000 / (r.timestamp / 1000));
         jitter = (r.jitter || 0) * 1000;
       }
@@ -190,6 +192,20 @@ function attachHud(pc) {
         rtt = (r.currentRoundTripTime || 0) * 1000;
       }
     });
-    hud.textContent = `${fps|0}fps  ${kbps}kbps  jit ${jitter.toFixed(1)}ms  rtt ${rtt.toFixed(1)}ms`;
-  }, 1000);
+
+    // Connection-state badge: makes a black tab self-explanatory.
+    let status;
+    if (pc.connectionState !== 'connected') {
+      status = pc.connectionState; // new | connecting | failed | disconnected | closed
+    } else if (bytesReceived === 0) {
+      status = 'waiting for first frame';
+    } else if (fps === 0 && firstBytesSeen) {
+      status = 'no frames'; // bytes but no fps means decoder errors or stalled
+    } else {
+      firstBytesSeen = true;
+      status = 'streaming';
+    }
+
+    hud.textContent = `${status}  ·  ${fps|0}fps  ${kbps}kbps  jit ${jitter.toFixed(1)}ms  rtt ${rtt.toFixed(1)}ms`;
+  }, 500);
 }

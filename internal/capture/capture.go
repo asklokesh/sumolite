@@ -58,6 +58,11 @@ func (b *Backend) UseTestSource() {
 // chosen.
 func (b *Backend) Encoder(pref string) string { return b.encoderPref }
 
+// DisplayIndex picks which AVFoundation screen device to capture. On
+// macOS device 0 is usually the FaceTime camera, screen 0 is device 1,
+// screen 1 is device 2, etc. `sumolite doctor` lists what's available.
+var DisplayIndex = "1"
+
 // darwinFFmpeg drives ffmpeg with AVFoundation screen capture and the
 // h264_videotoolbox hardware encoder, writing raw Annex-B H.264 to
 // stdout. We pick the first screen device (index 1 on most setups;
@@ -75,8 +80,19 @@ func darwinFFmpeg() *Backend {
 				"-capture_cursor", "1",
 				"-framerate", "60",
 				"-pixel_format", "nv12",
-				"-i", "1:none", // screen 0, no audio
-				"-vf", "scale=-2:1080",
+				"-i", DisplayIndex + ":none", // selected screen, no audio
+				// fps=60 in the filter graph forces the decimator to
+				// drop duplicated frames AVFoundation emits when the
+				// screen is idle, and -r 60 caps output framerate so
+				// h264_videotoolbox doesn't encode the same frame twice.
+				// Without this AVFoundation pushes frames at ~200fps
+				// regardless of the -framerate hint, the encoder
+				// produces 200 small frames per second, and the
+				// decoder on the receiving end gets RTP timestamps
+				// that advance 3x faster than real time and freezes
+				// after the first frame.
+				"-vf", "scale=-2:1080,fps=60",
+				"-r", "60",
 				"-c:v", "h264_videotoolbox",
 				"-realtime", "1",
 				"-allow_sw", "0",

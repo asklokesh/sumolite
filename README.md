@@ -30,7 +30,19 @@ curl -fsSL https://sumolite.dev/install.sh | sh
 sumolite serve
 ```
 
-Prints a pairing URL and a 6-digit code. Open the URL on any device, type the code, you're in.
+Prints a pairing URL and a 6-digit code. Open the URL on any device, type the code, you're in. The code is saved to `~/.config/sumolite/token` and reused on restart, so bookmarked links keep working. Use `--rotate-token` to mint a fresh one.
+
+### macOS first-run permissions
+
+macOS gates screen capture behind TCC. The first time you run `sumolite serve` it will silently fail to produce video (the browser will show a black tab with a healthy RTT in the HUD). Grant Screen Recording permission to the `ffmpeg` binary:
+
+1. Run `sumolite doctor` once. It prints the available displays and the path you need to allow.
+2. Open **System Settings -> Privacy & Security -> Screen & System Audio Recording**, click **+**, hit **Cmd+Shift+G**, and paste the real ffmpeg path (resolve the symlink, e.g. `/opt/homebrew/Cellar/ffmpeg/8.1.1/bin/ffmpeg`). Enable the toggle.
+3. Restart `sumolite serve`. The capture log will go from `0 bytes/s` to multi-Mbps within the first second.
+
+The first browser click will also trigger an Accessibility prompt for mouse and keyboard injection. Approve it.
+
+If your Mac has multiple displays, run `sumolite doctor` to see the indices and pass `--display 2` (or whatever) to pick a specific screen.
 
 ### Server (Docker, Linux only)
 

@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -58,11 +60,14 @@ func serve(args []string) {
 	bitrate := fs.Int("bitrate", 25_000, "target bitrate in kbps")
 	encoder := fs.String("encoder", "auto", "encoder: auto | h264 | h265 | av1")
 	testSrc := fs.Bool("test-source", false, "use synthetic video pattern instead of screen capture (for smoke testing)")
+	rotateToken := fs.Bool("rotate-token", false, "regenerate the pairing token instead of reusing the saved one")
+	display := fs.String("display", "1", "AVFoundation device index for the screen to capture (run `sumolite doctor` to list)")
 	fs.Parse(args)
+	capture.DisplayIndex = *display
 
 	token := os.Getenv("SUMOLITE_TOKEN")
 	if token == "" {
-		token = randCode(6)
+		token = loadOrCreateToken(*rotateToken)
 	}
 
 	cap, err := capture.Detect()
@@ -131,6 +136,38 @@ func firstNonLoopback() string {
 		}
 	}
 	return "localhost"
+}
+
+// loadOrCreateToken keeps the same pairing code across server restarts so
+// bookmarked "?code=XYZ" URLs keep working. The token lives in
+// $XDG_CONFIG_HOME/sumolite/token (or ~/.config/sumolite/token). Pass
+// --rotate-token to mint a fresh one.
+func loadOrCreateToken(rotate bool) string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".config")
+	}
+	dir = filepath.Join(dir, "sumolite")
+	path := filepath.Join(dir, "token")
+
+	if !rotate {
+		if b, err := os.ReadFile(path); err == nil && len(b) >= 6 {
+			t := strings.TrimSpace(string(b))
+			if len(t) >= 6 {
+				return t
+			}
+		}
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		log.Printf("token dir: %v (falling back to in-memory token)", err)
+		return randCode(6)
+	}
+	t := randCode(6)
+	if err := os.WriteFile(path, []byte(t+"\n"), 0o600); err != nil {
+		log.Printf("token persist: %v", err)
+	}
+	return t
 }
 
 // noCache wraps a handler so browsers always revalidate. The web client
