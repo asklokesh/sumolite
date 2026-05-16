@@ -22,7 +22,7 @@ type encoderChoice struct {
 }
 
 // Detect inspects the host and returns the best available capture backend.
-// It does not fail if hardware encode is missing — the software fallback is
+// It does not fail if hardware encode is missing. The software fallback is
 // always last in line.
 func Detect() (*Backend, error) {
 	switch runtime.GOOS {
@@ -33,6 +33,14 @@ func Detect() (*Backend, error) {
 	default:
 		return nil, fmt.Errorf("unsupported OS %q", runtime.GOOS)
 	}
+}
+
+// TestSource swaps the platform screen capture for a synthetic moving
+// pattern. Used to validate the encode and WebRTC paths without
+// requiring Screen Recording permission. The encoder and the rest of the
+// pipeline are unchanged.
+func (b *Backend) UseTestSource() {
+	b.source = "videotestsrc is-live=true pattern=ball ! video/x-raw,width=1280,height=720,framerate=60/1"
 }
 
 func darwin() *Backend {

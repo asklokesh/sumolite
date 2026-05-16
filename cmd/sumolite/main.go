@@ -57,6 +57,7 @@ func serve(args []string) {
 	addr := fs.String("addr", ":7878", "listen address for signaling / web client")
 	bitrate := fs.Int("bitrate", 25_000, "target bitrate in kbps")
 	encoder := fs.String("encoder", "auto", "encoder: auto | h264 | h265 | av1")
+	testSrc := fs.Bool("test-source", false, "use synthetic video pattern instead of screen capture (for smoke testing)")
 	fs.Parse(args)
 
 	token := os.Getenv("SUMOLITE_TOKEN")
@@ -67,6 +68,10 @@ func serve(args []string) {
 	cap, err := capture.Detect()
 	if err != nil {
 		log.Fatalf("capture detect: %v", err)
+	}
+	if *testSrc {
+		cap.UseTestSource()
+		cap.Name = "test source (videotestsrc)"
 	}
 	log.Printf("capture backend: %s  encoder: %s", cap.Name, cap.Encoder(*encoder))
 
