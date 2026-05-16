@@ -5,60 +5,63 @@ import (
 	"testing"
 )
 
-func TestBackendEncoderFallsBackToSoftware(t *testing.T) {
-	b := &Backend{
-		Name:       "test",
-		source:     "videotestsrc",
-		hwEncoders: nil,
-		swEncoder:  "x264enc tune=zerolatency",
+func TestDetectReturnsBackendForHost(t *testing.T) {
+	b, err := Detect()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := b.Encoder("auto"); !strings.HasPrefix(got, "x264enc") {
-		t.Fatalf("expected software fallback, got %q", got)
+	if b.program == "" {
+		t.Fatal("backend missing program")
 	}
-}
-
-func TestBackendEncoderPrefersHardware(t *testing.T) {
-	b := &Backend{
-		Name:   "test",
-		source: "videotestsrc",
-		hwEncoders: []encoderChoice{
-			{"h264", "vah264enc rate-control=cbr"},
-		},
-		swEncoder: "x264enc tune=zerolatency",
+	if b.argsFor == nil {
+		t.Fatal("backend missing argsFor")
 	}
-	if got := b.Encoder("auto"); !strings.HasPrefix(got, "vah264enc") {
-		t.Fatalf("expected hw encoder, got %q", got)
+	args := b.argsFor(8000, "auto")
+	if len(args) == 0 {
+		t.Fatal("argsFor returned no args")
 	}
 }
 
-func TestBackendEncoderHonorsExplicitPreference(t *testing.T) {
-	b := &Backend{
-		Name:   "test",
-		source: "videotestsrc",
-		hwEncoders: []encoderChoice{
-			{"h264", "vah264enc"},
-			{"h265", "vah265enc"},
-		},
-		swEncoder: "x264enc",
+func TestUseTestSourceFallsBackToGStreamer(t *testing.T) {
+	b, err := Detect()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := b.Encoder("h265"); !strings.HasPrefix(got, "vah265enc") {
-		t.Fatalf("expected h265, got %q", got)
+	b.UseTestSource()
+	if b.program != "gst-launch-1.0" {
+		t.Fatalf("test source should use gst-launch-1.0, got %q", b.program)
 	}
-	// Unknown pref → first hw encoder.
-	if got := b.Encoder("av1"); !strings.HasPrefix(got, "vah264enc") {
-		t.Fatalf("expected fallback to first hw, got %q", got)
+	args := strings.Join(b.argsFor(5000, "auto"), " ")
+	for _, want := range []string{"videotestsrc", "x264enc", "bitrate=5000", "h264parse", "fdsink"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("test source args missing %q in:\n%s", want, args)
+		}
 	}
 }
 
-func TestLaunchStringContainsAllParts(t *testing.T) {
-	b := &Backend{
-		source:    "videotestsrc",
-		swEncoder: "x264enc tune=zerolatency",
+func TestDarwinBackendShape(t *testing.T) {
+	b := darwinFFmpeg()
+	if b.program != "ffmpeg" {
+		t.Fatalf("darwin should use ffmpeg, got %q", b.program)
 	}
-	ls := b.LaunchString(5000, "auto")
-	for _, want := range []string{"videotestsrc", "videoconvert", "x264enc", "bitrate=5000", "h264parse", "fdsink"} {
-		if !strings.Contains(ls, want) {
-			t.Fatalf("launch string missing %q:\n%s", want, ls)
+	args := b.argsFor(8000, "auto")
+	got := strings.Join(args, " ")
+	for _, want := range []string{"avfoundation", "h264_videotoolbox", "8000k", "-f", "h264", "pipe:1"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("darwin args missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestLinuxBackendShape(t *testing.T) {
+	b := linuxGStreamer()
+	if b.program != "gst-launch-1.0" {
+		t.Fatalf("linux should use gst-launch-1.0, got %q", b.program)
+	}
+	args := strings.Join(b.argsFor(7000, "auto"), " ")
+	for _, want := range []string{"videoconvert", "bitrate=7000", "h264parse", "fdsink"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("linux args missing %q in:\n%s", want, args)
 		}
 	}
 }

@@ -1,6 +1,10 @@
-// Package capture picks the right GStreamer source + hardware encoder for the
-// host, then exposes a launch string that produces RTP H.264/H.265 ready to
-// hand to Pion.
+// Package capture picks the right screen-capture + hardware-encoder
+// pipeline for the host. On Linux it uses GStreamer. On macOS it uses
+// ffmpeg because gst-launch's avfvideosrc screen capture is broken on
+// Apple Silicon (caps negotiation fails since Apple deprecated the old
+// CGDisplayStream API). ffmpeg's avfoundation indev still works and the
+// h264_videotoolbox encoder gives us hardware H.264 with one fewer
+// subprocess to manage.
 package capture
 
 import (
@@ -9,104 +13,117 @@ import (
 	"runtime"
 )
 
+// Backend is a platform-specific capture+encode plan. Start() spawns the
+// chosen command and the framer reads Annex-B H.264 off its stdout.
 type Backend struct {
-	Name       string
-	source     string
-	hwEncoders []encoderChoice
-	swEncoder  string
-}
+	Name string
 
-type encoderChoice struct {
-	codec string // h264 | h265 | av1
-	gst   string // gstreamer element + props
+	// program is the binary to exec ("gst-launch-1.0" or "ffmpeg").
+	program string
+
+	// argsFor returns the full argv given the runtime knobs.
+	argsFor func(bitrateKbps int, pref string) []string
+
+	// For introspection / tests.
+	encoderPref string
 }
 
 // Detect inspects the host and returns the best available capture backend.
-// It does not fail if hardware encode is missing. The software fallback is
-// always last in line.
 func Detect() (*Backend, error) {
 	switch runtime.GOOS {
 	case "darwin":
-		return darwin(), nil
+		return darwinFFmpeg(), nil
 	case "linux":
-		return linuxBackend(), nil
+		return linuxGStreamer(), nil
 	default:
 		return nil, fmt.Errorf("unsupported OS %q", runtime.GOOS)
 	}
 }
 
-// TestSource swaps the platform screen capture for a synthetic moving
-// pattern. Used to validate the encode and WebRTC paths without
-// requiring Screen Recording permission. The encoder and the rest of the
-// pipeline are unchanged.
+// UseTestSource swaps the platform screen capture for a synthetic moving
+// pattern, validating the encode and WebRTC paths without requiring
+// Screen Recording permission.
 func (b *Backend) UseTestSource() {
-	b.source = "videotestsrc is-live=true pattern=ball ! video/x-raw,width=1280,height=720,framerate=60/1"
+	b.program = "gst-launch-1.0"
+	b.argsFor = func(bitrateKbps int, pref string) []string {
+		enc := "x264enc tune=zerolatency speed-preset=ultrafast bitrate=" + itoa(bitrateKbps) + " key-int-max=60"
+		pipeline := "videotestsrc is-live=true pattern=ball ! video/x-raw,width=1280,height=720,framerate=60/1 ! videoconvert ! video/x-raw,format=I420 ! " + enc + " ! h264parse config-interval=-1 ! fdsink"
+		return append([]string{"-q"}, splitArgs(pipeline)...)
+	}
+	b.Name = "test source (videotestsrc + x264)"
 }
 
-func darwin() *Backend {
+// Encoder returns a human label for the configured encoder. Used for
+// logging at startup so the operator can see which hardware path was
+// chosen.
+func (b *Backend) Encoder(pref string) string { return b.encoderPref }
+
+// darwinFFmpeg drives ffmpeg with AVFoundation screen capture and the
+// h264_videotoolbox hardware encoder, writing raw Annex-B H.264 to
+// stdout. We pick the first screen device (index 1 on most setups;
+// device 0 is the FaceTime camera). The framerate, GOP and bitrate are
+// tuned for low-latency streaming.
+func darwinFFmpeg() *Backend {
 	return &Backend{
-		Name:   "macOS / avfvideosrc",
-		source: "avfvideosrc capture-screen=true capture-screen-cursor=true",
-		hwEncoders: []encoderChoice{
-			{"h264", "vtenc_h264_hw realtime=true allow-frame-reordering=false max-keyframe-interval=240"},
-			{"h265", "vtenc_h265_hw realtime=true allow-frame-reordering=false max-keyframe-interval=240"},
+		Name:        "macOS / ffmpeg avfoundation + h264_videotoolbox",
+		program:     "ffmpeg",
+		encoderPref: "h264_videotoolbox",
+		argsFor: func(bitrateKbps int, pref string) []string {
+			return []string{
+				"-hide_banner", "-loglevel", "error", "-nostdin",
+				"-f", "avfoundation",
+				"-capture_cursor", "1",
+				"-framerate", "60",
+				"-pixel_format", "nv12",
+				"-i", "1:none", // screen 0, no audio
+				"-vf", "scale=-2:1080",
+				"-c:v", "h264_videotoolbox",
+				"-realtime", "1",
+				"-allow_sw", "0",
+				"-b:v", itoa(bitrateKbps) + "k",
+				"-g", "120",
+				"-pix_fmt", "nv12",
+				"-f", "h264",
+				"pipe:1",
+			}
 		},
-		swEncoder: "x264enc tune=zerolatency speed-preset=ultrafast key-int-max=240",
 	}
 }
 
-func linuxBackend() *Backend {
+func linuxGStreamer() *Backend {
 	source := "ximagesrc use-damage=0 show-pointer=true"
 	if hasElement("pipewiresrc") {
-		// Wayland / portal path
 		source = "pipewiresrc do-timestamp=true"
 	}
-	enc := []encoderChoice{}
-	if hasElement("nvh264enc") {
-		enc = append(enc, encoderChoice{"h264", "nvh264enc preset=low-latency-hp rc-mode=cbr gop-size=240"})
-	}
-	if hasElement("vah264enc") {
-		enc = append(enc, encoderChoice{"h264", "vah264enc rate-control=cbr key-int-max=240"})
-	}
-	if hasElement("vaapih264enc") {
-		enc = append(enc, encoderChoice{"h264", "vaapih264enc rate-control=cbr keyframe-period=240"})
+	enc := "x264enc tune=zerolatency speed-preset=ultrafast key-int-max=240"
+	encName := "x264enc (software)"
+	switch {
+	case hasElement("nvh264enc"):
+		enc = "nvh264enc preset=low-latency-hp rc-mode=cbr gop-size=240"
+		encName = "nvh264enc (NVIDIA)"
+	case hasElement("vah264enc"):
+		enc = "vah264enc rate-control=cbr key-int-max=240"
+		encName = "vah264enc (VA-API)"
+	case hasElement("vaapih264enc"):
+		enc = "vaapih264enc rate-control=cbr keyframe-period=240"
+		encName = "vaapih264enc (VA-API legacy)"
 	}
 	return &Backend{
-		Name:       "linux / " + source,
-		source:     source,
-		hwEncoders: enc,
-		swEncoder:  "x264enc tune=zerolatency speed-preset=ultrafast key-int-max=240",
+		Name:        "linux / " + source,
+		program:     "gst-launch-1.0",
+		encoderPref: encName,
+		argsFor: func(bitrateKbps int, pref string) []string {
+			pipeline := fmt.Sprintf(
+				"%s ! videoconvert ! video/x-raw,format=NV12 ! %s bitrate=%d ! h264parse config-interval=-1 ! fdsink",
+				source, enc, bitrateKbps,
+			)
+			return append([]string{"-q"}, splitArgs(pipeline)...)
+		},
 	}
-}
-
-// Encoder picks an encoder element string, honoring the user's preference
-// ("auto" picks the first hardware encoder, falling back to software).
-func (b *Backend) Encoder(pref string) string {
-	if pref != "auto" {
-		for _, e := range b.hwEncoders {
-			if e.codec == pref {
-				return e.gst
-			}
-		}
-	}
-	if len(b.hwEncoders) > 0 {
-		return b.hwEncoders[0].gst
-	}
-	return b.swEncoder
-}
-
-// LaunchString builds a full gst-launch pipeline that produces raw H.264
-// NAL units on stdout, ready to be packetized into RTP by Pion.
-//
-// We deliberately don't muxbecause Pion handles RTP packetization itself.
-func (b *Backend) LaunchString(bitrateKbps int, pref string) string {
-	enc := b.Encoder(pref)
-	return fmt.Sprintf(
-		"%s ! videoconvert ! video/x-raw,format=NV12 ! %s bitrate=%d ! h264parse config-interval=-1 ! fdsink",
-		b.source, enc, bitrateKbps,
-	)
 }
 
 func hasElement(name string) bool {
 	return exec.Command("gst-inspect-1.0", name).Run() == nil
 }
+
+func itoa(n int) string { return fmt.Sprintf("%d", n) }

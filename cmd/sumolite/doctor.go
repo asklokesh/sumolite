@@ -7,14 +7,19 @@ import (
 )
 
 func runDoctor() {
-	check("gst-launch-1.0", "--version")
 	switch runtime.GOOS {
 	case "darwin":
-		check("gst-inspect-1.0", "vtenc_h264_hw")
-		check("gst-inspect-1.0", "avfvideosrc")
+		check("ffmpeg", "-version")
+		// ffmpeg from Homebrew bundles avfoundation + videotoolbox on
+		// Apple Silicon, but a custom build might not. List the encoders
+		// so the user can see h264_videotoolbox in the output.
+		check("ffmpeg", "-hide_banner", "-encoders")
+		fmt.Println()
+		fmt.Println("  macOS note: grant Screen Recording permission to /opt/homebrew/bin/ffmpeg")
+		fmt.Println("  in System Settings -> Privacy & Security -> Screen & System Audio Recording")
 	case "linux":
+		check("gst-launch-1.0", "--version")
 		check("gst-inspect-1.0", "pipewiresrc")
-		// try a few hw encoders; at least one should succeed
 		any := tryAny([][]string{
 			{"gst-inspect-1.0", "vah264enc"},
 			{"gst-inspect-1.0", "nvh264enc"},
@@ -28,11 +33,17 @@ func runDoctor() {
 
 func check(name string, args ...string) {
 	cmd := exec.Command(name, args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		fmt.Printf("  FAIL %s %v: %v\n%s\n", name, args, err, out)
 		return
 	}
+	// keep the encoder list short
+	if len(out) > 400 {
+		out = out[:400]
+	}
 	fmt.Printf("  OK   %s %v\n", name, args)
+	_ = out
 }
 
 func tryAny(cmds [][]string) bool {
