@@ -10,10 +10,10 @@ import (
 )
 
 type Backend struct {
-	Name        string
-	source      string
-	hwEncoders  []encoderChoice
-	swEncoder   string
+	Name       string
+	source     string
+	hwEncoders []encoderChoice
+	swEncoder  string
 }
 
 type encoderChoice struct {

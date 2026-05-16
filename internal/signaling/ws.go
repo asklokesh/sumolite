@@ -5,9 +5,13 @@ package signaling
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"sync/atomic"
+	"time"
 
 	"github.com/asklokesh/sumolite/internal/session"
 	"github.com/pion/webrtc/v4"
@@ -24,8 +28,8 @@ func NewHandler(hub *session.Hub, token string) http.Handler {
 }
 
 type clientMsg struct {
-	Type  string                    `json:"type"`
-	Token string                    `json:"token,omitempty"`
+	Type  string                     `json:"type"`
+	Token string                     `json:"token,omitempty"`
 	SDP   *webrtc.SessionDescription `json:"sdp,omitempty"`
 }
 
@@ -35,19 +39,42 @@ type serverMsg struct {
 	Err  string                     `json:"error,omitempty"`
 }
 
+var sessionSeq atomic.Uint64
+
+// newSessionID returns a non-colliding session id. Using r.RemoteAddr
+// alone is wrong because the same client reconnecting from the same
+// ephemeral port would collide.
+func newSessionID() string {
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:]) + "-" +
+		hex.EncodeToString([]byte{byte(sessionSeq.Add(1))})
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true, // LAN deployments rarely have matching Origin
+		InsecureSkipVerify: true, // LAN deployments rarely have a matching Origin
 	})
 	if err != nil {
 		return
 	}
 	defer c.Close(websocket.StatusInternalError, "bye")
-	ctx := r.Context()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	authed := false
+	// 10s deadline on the auth handshake; nothing else should be tolerated
+	// from a peer that hasn't proven the pairing token.
+	authCtx, authCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer authCancel()
 
 	for {
+		readCtx := ctx
+		if !authed {
+			readCtx = authCtx
+		}
 		var m clientMsg
-		if err := readJSON(ctx, c, &m); err != nil {
+		if err := readJSON(readCtx, c, &m); err != nil {
 			return
 		}
 		switch m.Type {
@@ -56,19 +83,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				_ = writeJSON(ctx, c, serverMsg{Type: "error", Err: "bad token"})
 				return
 			}
+			authed = true
 			_ = writeJSON(ctx, c, serverMsg{Type: "ok"})
 		case "offer":
-			s, err := h.hub.New(r.RemoteAddr)
+			if !authed {
+				_ = writeJSON(ctx, c, serverMsg{Type: "error", Err: "auth first"})
+				return
+			}
+			if m.SDP == nil {
+				_ = writeJSON(ctx, c, serverMsg{Type: "error", Err: "missing sdp"})
+				return
+			}
+			s, err := h.hub.Open(newSessionID())
 			if err != nil {
 				_ = writeJSON(ctx, c, serverMsg{Type: "error", Err: err.Error()})
 				return
 			}
 			ans, err := s.AnswerOffer(*m.SDP)
 			if err != nil {
+				s.Close()
 				_ = writeJSON(ctx, c, serverMsg{Type: "error", Err: err.Error()})
 				return
 			}
 			_ = writeJSON(ctx, c, serverMsg{Type: "answer", SDP: &ans})
+		default:
+			_ = writeJSON(ctx, c, serverMsg{Type: "error", Err: "unknown type"})
 		}
 	}
 }

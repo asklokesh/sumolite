@@ -70,7 +70,7 @@ func serve(args []string) {
 	}
 	log.Printf("capture backend: %s  encoder: %s", cap.Name, cap.Encoder(*encoder))
 
-	hub := session.NewHub(cap, *bitrate, *encoder)
+	hub := session.NewFromBackend(cap, *bitrate, *encoder, 60)
 	mux := http.NewServeMux()
 	mux.Handle("/ws", signaling.NewHandler(hub, token))
 	mux.Handle("/", http.FileServer(http.Dir("web/static")))

@@ -1,19 +1,27 @@
 package capture
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"os/exec"
 )
 
-// Pipeline is a running gst-launch process that emits H.264 NAL units on
-// stdout. Frame() reads one Annex-B framed NAL at a time.
+// FrameSource is the minimal interface a session needs from a capture
+// pipeline. Concrete implementations: gstreamer-backed (production) and
+// in-memory (tests).
+type FrameSource interface {
+	// Frame blocks until the next access unit is available and returns
+	// its Annex-B bytes (with start codes intact).
+	Frame() ([]byte, error)
+	Close() error
+}
+
+// Pipeline is a running gst-launch process feeding an Annex-B framer.
 type Pipeline struct {
-	cmd  *exec.Cmd
-	out  io.ReadCloser
-	br   *bufio.Reader
+	cmd    *exec.Cmd
+	stderr io.ReadCloser
+	framer *AnnexBFramer
 }
 
 // Start spawns gst-launch-1.0 with the configured pipeline.
@@ -25,36 +33,32 @@ func (b *Backend) Start(ctx context.Context, bitrateKbps int, pref string) (*Pip
 	if err != nil {
 		return nil, err
 	}
-	cmd.Stderr = nil
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start gst-launch: %w", err)
-	}
-	return &Pipeline{cmd: cmd, out: out, br: bufio.NewReaderSize(out, 1<<20)}, nil
-}
-
-// Frame returns the next Annex-B NAL unit (without the start code).
-// Blocks until a full unit is available.
-func (p *Pipeline) Frame() ([]byte, error) {
-	// Naive Annex-B scanner: find next 0x000001 or 0x00000001 boundary.
-	// For brevity this scaffold reads in chunks; production code should
-	// use a real Annex-B state machine.
-	buf := make([]byte, 64*1024)
-	n, err := p.br.Read(buf)
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return nil, err
 	}
-	return buf[:n], nil
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start gst-launch: %w", err)
+	}
+	return &Pipeline{
+		cmd:    cmd,
+		stderr: stderr,
+		framer: NewAnnexBFramer(out),
+	}, nil
 }
+
+func (p *Pipeline) Frame() ([]byte, error) { return p.framer.Next() }
 
 func (p *Pipeline) Close() error {
 	if p.cmd != nil && p.cmd.Process != nil {
 		_ = p.cmd.Process.Kill()
+		_, _ = p.cmd.Process.Wait()
 	}
 	return nil
 }
 
-// splitArgs is a tiny shell-like splitter that respects quoted strings
-// but not escape sequences. Good enough for our generated pipelines.
+// splitArgs is a tiny shell-like splitter that respects double-quoted
+// strings but not escapes. Good enough for our generated pipelines.
 func splitArgs(s string) []string {
 	var out []string
 	var cur []rune

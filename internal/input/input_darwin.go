@@ -45,33 +45,28 @@ func platformInjector() (Injector, error) {
 }
 
 func (d *darwinInjector) Handle(b []byte) error {
-	kind, p, err := decode(b)
+	ev, err := Parse(b)
 	if err != nil {
 		return err
 	}
-	switch kind {
+	switch ev.Kind {
 	case EvMouseMove:
-		if len(p) < 4 {
-			return nil
-		}
-		x, y := i16(p, 0), i16(p, 2)
-		d.lastX, d.lastY = x, y
-		C.postMouseMove(C.double(x), C.double(y))
+		d.lastX, d.lastY = ev.X, ev.Y
+		C.postMouseMove(C.double(ev.X), C.double(ev.Y))
 	case EvMouseButton:
-		if len(p) < 2 {
-			return nil
+		down := 0
+		if ev.Down {
+			down = 1
 		}
-		C.postMouseButton(C.double(d.lastX), C.double(d.lastY), C.int(p[0]), C.int(p[1]))
+		C.postMouseButton(C.double(d.lastX), C.double(d.lastY), C.int(ev.Button), C.int(down))
 	case EvScroll:
-		if len(p) < 4 {
-			return nil
-		}
-		C.postScroll(C.int(i16(p, 0)), C.int(i16(p, 2)))
+		C.postScroll(C.int(ev.X), C.int(ev.Y))
 	case EvKey:
-		if len(p) < 3 {
-			return nil
+		down := 0
+		if ev.Down {
+			down = 1
 		}
-		C.postKey(C.int(u16(p, 0)), C.int(p[2]))
+		C.postKey(C.int(ev.Key), C.int(down))
 	}
 	return nil
 }
