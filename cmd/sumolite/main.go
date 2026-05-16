@@ -78,7 +78,7 @@ func serve(args []string) {
 	hub := session.NewFromBackend(cap, *bitrate, *encoder, 60)
 	mux := http.NewServeMux()
 	mux.Handle("/ws", signaling.NewHandler(hub, token))
-	mux.Handle("/", http.FileServer(http.Dir("web/static")))
+	mux.Handle("/", noCache(http.FileServer(http.Dir("web/static"))))
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -131,6 +131,18 @@ func firstNonLoopback() string {
 		}
 	}
 	return "localhost"
+}
+
+// noCache wraps a handler so browsers always revalidate. The web client
+// is small and updates often during development, so caching causes more
+// confusion than it saves bandwidth.
+func noCache(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		h.ServeHTTP(w, r)
+	})
 }
 
 func randCode(n int) string {
