@@ -151,6 +151,11 @@ func (h *Hub) remove(id string) {
 }
 
 // pump runs the capture pipeline and pushes samples into the WebRTC track.
+// Sample durations are derived from wall-clock arrival time of each
+// access unit, not a fixed nominal frame interval. Using wall-clock
+// duration keeps RTP timestamps aligned with real time even when the
+// encoder produces slightly more or fewer frames per second than we
+// guessed (e.g. when the user drags a window and the capture rate dips).
 func (h *Hub) pump(s *Session) {
 	src, err := h.newSource(s.ctx)
 	if err != nil {
@@ -160,6 +165,7 @@ func (h *Hub) pump(s *Session) {
 	}
 	defer src.Close()
 
+	var last time.Time
 	for {
 		if s.closed.Load() {
 			return
@@ -174,7 +180,13 @@ func (h *Hub) pump(s *Session) {
 		if s.closed.Load() {
 			return
 		}
-		if err := s.vid.WriteSample(media.Sample{Data: buf, Duration: h.frameDur}); err != nil {
+		now := time.Now()
+		dur := h.frameDur
+		if !last.IsZero() {
+			dur = now.Sub(last)
+		}
+		last = now
+		if err := s.vid.WriteSample(media.Sample{Data: buf, Duration: dur}); err != nil {
 			log.Printf("write sample: %v", err)
 			return
 		}

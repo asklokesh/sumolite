@@ -21,18 +21,63 @@ const hud = document.getElementById('hud');
 
 const EV = { MOVE: 1, BTN: 2, SCROLL: 3, KEY: 4 };
 
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const token = codeEl.value.trim();
+// Pairing is sticky: once a code works, we keep it. Refreshes, reconnects
+// after sleep, and re-opens from a bookmarked URL all bypass the form.
+// The code is scoped to this host, so different sumolite servers don't
+// share state.
+const STORAGE_KEY = `sumolite:pair:${location.host}`;
+const URL_TOKEN = new URLSearchParams(location.search).get('code') ||
+  new URLSearchParams(location.hash.replace(/^#/, '')).get('code');
+
+const showVideo = () => {
+  form.classList.add('hidden');
+  video.classList.remove('hidden');
+  hud.classList.remove('hidden');
+};
+
+const showForm = () => {
+  form.classList.remove('hidden');
+  video.classList.add('hidden');
+  hud.classList.add('hidden');
+  codeEl.focus();
+  codeEl.select();
+};
+
+async function tryConnect(token, opts = {}) {
   try {
     await connect(token);
-    form.classList.add('hidden');
-    video.classList.remove('hidden');
-    hud.classList.remove('hidden');
+    localStorage.setItem(STORAGE_KEY, token);
+    showVideo();
+    return true;
   } catch (err) {
-    alert('connect failed: ' + err.message);
+    // Bad-token errors should drop the stored code so we don't loop on
+    // a stale value. Transient errors keep it.
+    if (/bad token|auth/i.test(err.message)) {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+    if (!opts.silent) alert('connect failed: ' + err.message);
+    showForm();
+    return false;
   }
+}
+
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const token = codeEl.value.trim();
+  if (token) tryConnect(token);
 });
+
+// Auto-reconnect if we have a code in URL or storage. URL wins so a
+// shared link "?code=abc123" always paste-works.
+(async () => {
+  const saved = URL_TOKEN || localStorage.getItem(STORAGE_KEY);
+  if (saved) {
+    codeEl.value = saved;
+    await tryConnect(saved, { silent: true });
+  } else {
+    showForm();
+  }
+})();
 
 async function connect(token) {
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);

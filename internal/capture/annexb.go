@@ -92,9 +92,24 @@ func (f *AnnexBFramer) Next() ([]byte, error) {
 		}
 		t := nalType(hdr & 0x1F)
 
+		// A new access unit starts when:
+		//   - We see an AUD (always marks the start of an AU).
+		//   - We see SPS/PPS/SEI AFTER we've already collected a VCL NAL
+		//     in this AU (parameter sets prefixing the NEXT frame).
+		//   - We see any VCL NAL AFTER a previous VCL (multi-slice frames
+		//     stay together in practice because our encoder pipelines
+		//     emit single-slice frames; treating any VCL-after-VCL as a
+		//     boundary is the correct single-slice assumption).
+		//
+		// Previously we flushed on every SPS, which split each IDR's
+		// parameter-set prefix from its slice and made every frame
+		// emit ~3 sub-AUs. That tripled RTP timestamps and stalled
+		// the decoder after the first frame.
 		boundary := false
 		switch {
-		case t == nalAUD || t == nalSPS:
+		case t == nalAUD:
+			boundary = true
+		case (t == nalSPS || t == nalPPS || t == nalSEI) && f.hadVCL:
 			boundary = true
 		case isVCL(t) && f.hadVCL:
 			boundary = true
